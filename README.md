@@ -40,7 +40,7 @@ where file lives
 - Date: December 2025 Y
 
 
-##Citations:
+Citations:
 - All key sources can be found in FP4 Assignment
-- ChatGBT was used to help format code, debug, wetc.
+- ChatGBT was used to help format code, debug, etc.
 
