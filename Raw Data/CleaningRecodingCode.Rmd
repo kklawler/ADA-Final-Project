@@ -1,0 +1,295 @@
+---
+title: "RawNHISData"
+author: "KatieLawler"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+#Loading packages
+
+```{r}
+pacman::p_load(tidyverse, readr, table1, DiagrammeR, rsvg, dplyr)
+
+
+```
+
+#Loading main NHIS data & view first few rows
+
+```{r}
+nhis2023_raw <- read_csv("/Users/maryklawler/Desktop/ADA Final Project/Raw Data/adult23.csv")
+
+head(nhis2023_raw)
+```
+
+#Keeping Variables of Interest **NOTE: EDU + INCOME WERE REMOVED
+
+```{r}
+nhis2023_keyvars <- dplyr::select(
+  nhis2023_raw,  HHX, EMERG12MTC_A, COVER65_A, SEX_A, RACEALLP_A, MARITAL_A)
+
+head(nhis2023_keyvars)
+```
+
+#Number of Popul. 65+?
+
+```{r}
+sum(complete.cases(nhis2023_keyvars))
+
+```
+
+**####RECODING VARIABLES####**
+
+#Recoding ER Use
+
+```{r}
+
+#Recoding levels
+nhis2023_recoded <- nhis2023_keyvars %>%
+  mutate(ER_Use = case_when(
+    EMERG12MTC_A == 0 ~ 0,
+    EMERG12MTC_A == 1 ~ 1,
+    EMERG12MTC_A == 2 ~ 2,
+    EMERG12MTC_A %in% c(3, 4) ~ 3,
+    EMERG12MTC_A %in% c(7, 8, 9) ~ NA_real_,  #Missing values 
+    TRUE ~ NA_real_
+  ))
+
+#Convert to ordered factor for analysis
+nhis2023_recoded$ER_Use <- factor(
+  nhis2023_recoded$ER_Use,
+  levels = c(0, 1, 2, 3),
+  labels = c("0 visits", "1 visit", "2 visits", "3+ visits"),
+  ordered = TRUE
+)
+```
+
+#Recoding Health Insurance Status
+
+```{r}
+
+nhis2023_recoded <- nhis2023_recoded %>%
+  mutate(Insurance_Type = case_when(
+    COVER65_A == "1" ~ "Private",
+    COVER65_A == "2" ~ "Dual eligible",
+    COVER65_A == "3" ~ "Medicare Advantage",
+    COVER65_A == "4" ~ "Medicare only",
+    COVER65_A == "5" ~ "Other coverage",
+    COVER65_A == "6" ~ "Uninsured",
+    COVER65_A == "7" ~ "Don't know",   # keep as a level for now (will change to NA later for missing data exclusion crit., but need now for age popul. count)
+    TRUE ~ NA_character_
+  ))
+
+
+#Making factor variable
+nhis2023_recoded$Insurance_Type <- factor(nhis2023_recoded$Insurance_Type)
+```
+
+#Recoding Sex
+
+```{r}
+
+# Recoding binary var
+nhis2023_recoded <- nhis2023_recoded %>%
+  mutate(Sex = case_when(
+    SEX_A == "1" ~ "Male",
+    SEX_A == "2" ~ "Female",
+    SEX_A %in% c("7", "8", "9") ~ NA_character_,
+    TRUE ~ NA_character_
+  ))
+
+#Making factor variable
+nhis2023_recoded$Sex <- factor(nhis2023_recoded$Sex)
+```
+
+#Recoding Race/Ethnicty
+
+```{r}
+
+# Recoding categories + labelling
+nhis2023_recoded <- nhis2023_recoded %>%
+  mutate(RaceEth= case_when(
+    RACEALLP_A == "1" ~ "White only",
+    RACEALLP_A == "2" ~ "Black/African American only",
+    RACEALLP_A == "3" ~ "Asian only",
+    RACEALLP_A %in% c("4", "5") ~ "AIAN",
+    RACEALLP_A == "6" ~ "Other single/multiple races",
+    RACEALLP_A %in% c("7", "8", "9") ~ NA_character_,
+    TRUE ~ NA_character_
+  ))
+
+#Making factor variable
+nhis2023_recoded$RaceEth <- factor(nhis2023_recoded$RaceEth)
+```
+
+#Recoding Martial Status
+
+```{r}
+
+#Recoding categories
+nhis2023_recoded <- nhis2023_recoded %>%
+  mutate(Marital_Status = case_when(
+    MARITAL_A == "1" ~ "Married",
+    MARITAL_A %in% c("2", "3") ~ "Unmarried",
+    MARITAL_A %in% c("7", "8", "9") ~ NA_character_,
+    TRUE ~ NA_character_
+  ))
+
+#Making factor variable
+nhis2023_recoded$Marital_Status <- factor(nhis2023_recoded$Marital_Status)
+```
+
+#Renaming HHX
+
+```{r}
+nhis2023_recoded <- nhis2023_recoded %>%
+  rename(ParticipantID = HHX)
+```
+
+#Keeping Recoded Variables
+
+```{r}
+nhis2023_recoded_final <- nhis2023_recoded %>%
+  dplyr::select(ParticipantID, ER_Use, Insurance_Type, Sex, RaceEth, Marital_Status)
+
+head(nhis2023_recoded_final)
+
+```
+
+#Total Raw Count for nhis2023_recoded_final
+
+```{r}
+nrow(nhis2023_recoded_final)
+
+```
+
+
+
+**####EXCLUSION/INCLUSION CRIT., DROPPING MISSING VALUES FOR CCA####**
+
+
+#Dealing with exlcusion/inclusion crit. + missing data
+
+```{r}
+# Starting dataset
+n_start <- nrow(nhis2023_recoded_final)
+
+
+#Step 1: Keep all 65+ (using Insurance Type 65+, including 'Don't knows', will recode after get count for 65+ population)
+nhis1 <- nhis2023_recoded_final %>%
+  filter(Insurance_Type %in% c("Private", "Dual eligible", 
+                               "Medicare Advantage", "Medicare only", 
+                               "Other coverage", "Uninsured", "Don't know"))
+n1 <- nrow(nhis1)  # Should be 9703
+
+
+#Step 2: Drop missing ER Use
+nhis2 <- nhis1 %>%
+  filter(!is.na(ER_Use))
+n2 <- nrow(nhis2)
+
+
+#Step 3: Set "Don't know" to NA for CCA, then drop ALL missing Insurance_Type
+nhis3 <- nhis2 %>%
+  mutate(Insurance_Type = ifelse(Insurance_Type == "Don't know", NA, as.character(Insurance_Type))) %>%
+  mutate(Insurance_Type = factor(Insurance_Type)) %>%
+  filter(!is.na(Insurance_Type))
+n3 <- nrow(nhis3)
+
+
+#Step 4: Drop missing Sex
+nhis4 <- nhis3 %>%
+  filter(!is.na(Sex))
+n4 <- nrow(nhis4)
+
+
+# Step 5: Drop missing RaceEth
+nhis5 <- nhis4 %>%
+  filter(!is.na(RaceEth))
+n5 <- nrow(nhis5)
+
+
+# Step 6: Drop missing Marital_Status
+nhis6 <- nhis5 %>%
+  filter(!is.na(Marital_Status))
+n6 <- nrow(nhis6)
+
+
+# Final CCA dataset
+nhis2023_complete <- nhis6
+n_final <- nrow(nhis2023_complete)
+n_final
+
+```
+
+
+# Missing Rate (based off of analytic sample)
+
+```{r}
+
+# Total 65+ participants (based on incl/excl. criteria)
+n1 <- nrow(nhis1)  # Should be 9703
+
+# Final CCA dataset
+n_final <- nrow(nhis2023_complete)
+
+# Missing rate = proportion of 65+ participants lost due to missing data (including "Don't know", changed to NAs)
+MissingRate <- (1 - (n_final / n1)) * 100
+MissingRate  
+
+
+
+```
+
+
+
+**####FIGURE 1####**
+
+#Code to Create Figure 1 + print
+```{r}
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(rsvg)
+
+fig1 <- grViz("
+digraph flowchart {
+
+node [fontname = Times, shape = rectangle, fontsize = 16]
+
+node1 [label = '@@1']
+node2 [label = '@@2']
+node3 [label = '@@3']
+node4 [label = '@@4']
+node5 [label = '@@5']
+node6 [label = '@@6']
+node7 [label = '@@7']
+
+node1 -> node2 -> node3 -> node4 -> node5 -> node6 -> node7
+}
+
+[1]: 'Records received from NHIS: n = 29522'
+[2]: 'Participants Aged 65 Years Old and Above → n = 9703'
+[3]: 'Excluding missing ER Use → Remaining n = 9612'
+[4]: 'Excluding missing Insurance Type → Remaining n = 9581'
+[5]: 'Excluding missing Sex → Remaining n = 9581'
+[6]: 'Excluding missing Race/Ethnicity → Remaining n = 9331'
+[7]: 'Excluding missing Marital Status → Final analytic sample: n = 9057'
+")
+
+fig1
+
+#Saving as PNG
+fig1_svg <- export_svg(fig1)
+
+rsvg_png(charToRaw(fig1_svg), "Figure1.png", width = 2000, height = 1000)
+
+```
+
+**#Now, good for Complete Case Analysis (CCA)!!**
+
+#Useable CSV file for Analysis
+
+```{r}
+write_csv(nhis2023_complete, "/Users/maryklawler/Desktop/ADA Final Project/Processed Data/nhis2023_completeCCA.csv")
+```
+
+

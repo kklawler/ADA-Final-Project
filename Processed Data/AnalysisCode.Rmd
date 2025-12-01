@@ -1,0 +1,217 @@
+---
+title: "FinalAnalysisCode"
+author: "KatieLawler"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+**####LOAD CCA DATASET + VIEW####**
+
+#Loading Packages
+
+```{r}
+pacman::p_load(readr, tidyverse, nnet, MASS, funModeling, brant, broom, odds.n.ends, knitr, kableExtra)
+
+# readr: for read txt file
+# tidyverse: for various packages
+# nnet: Multinomial logistic regresison
+# MASS: Ordinal logistic regression
+# funModeling: for describe function
+# brant: for testing parallel regression assumption
+# knitr / kableExtra: formatting/tabes
+
+
+```
+
+#Reading Dataset
+
+```{r}
+nhis2023_completeCCA <- read_csv("/Users/maryklawler/Desktop/ADA Final Project/Processed Data/nhis2023_completeCCA.csv")
+
+head(nhis2023_completeCCA)
+
+
+```
+
+#Make ER Var Levels
+
+```{r}
+nhis2023_completeCCA <- nhis2023_completeCCA |>
+  mutate(
+    ER_Use = factor(
+      ER_Use,
+      levels = c("0 visits", "1 visit", "2 visits", "3+ visits"),
+      ordered = TRUE
+    )
+  )
+```
+
+**####DESCRIPTIVES + Figures/Vis. \####**
+
+#Table 1
+
+```{r}
+library(table1)
+
+# Labelling Vars for Table 1
+label(nhis2023_completeCCA$Insurance_Type) <- "Health Insurance Type"
+label(nhis2023_completeCCA$Sex) <- "Sex"
+label(nhis2023_completeCCA$RaceEth) <- "Race/Ethnicity"
+label(nhis2023_completeCCA$Marital_Status) <- "Marital Status"
+
+# Table 1
+T1 <- table1(~ Insurance_Type + Sex + RaceEth + Marital_Status | ER_Use,
+       data = nhis2023_completeCCA,
+       overall = FALSE,
+       topclass = "Rtable1-grid", # cleaner grid layout
+       caption = "Table 1: Participant Characteristics by ER Use",
+       footnote = "Missing values were excluded for complete case analysis (CCA).")
+
+T1
+
+# To copy over to presentation: knit to HTML, open in browser, copy into new table into word or ppt
+```
+
+
+
+#Descriptive Vis. (Bar Plot of ER Visits by Insurance Type)
+
+```{r}
+library(ggplot2)
+library(scales)
+
+ER_plot <- ggplot(nhis2023_completeCCA, aes(x = Insurance_Type, fill = ER_Use)) +
+  geom_bar(position = "fill") +  
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(
+    values = c(
+      "0 visits" = "#FFC0C0",  
+      "1 visit"  = "#FF9999",  
+      "2 visits" = "#FF6666",  
+      "3+ visits"= "#CC0000"   
+    )
+  ) +
+  labs(
+    x = "Insurance Type",
+    y = "Percent of Participants",
+    fill = "ER Visits",
+    title = "Distribution of ER Visits by Insurance Type"
+  ) +
+  theme_minimal(base_family = "Times New Roman") +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),   #Used chat to help with sizing
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1)  # rotating x labels
+  )
+
+
+ER_plot 
+
+#Saving image
+ggsave(
+  filename = "ER_Visits_by_Insurance.png",  # name of file
+  plot = ER_plot,                           # plot object
+  width = 6, height = 4, dpi = 300         # adjust size/resolution
+)
+
+```
+
+**\#### ORDINAL REG. ASSUMPTION CHECKING \####**
+
+##1. Dependent variable should be ordinal with more than two levels -- YES (ER_Use has 3 different levels)
+
+##2. No multicollinearity -- all good! VIFs are all near 1
+
+```{r}
+
+#Need numeric var for VIF check so created ER_use_num
+nhis2023_completeCCA <- nhis2023_completeCCA |>
+  mutate(
+    ER_Use_Num = case_when(
+      ER_Use == "0 visits" ~ 0,
+      ER_Use == "1 visit" ~ 1,
+      ER_Use == "2 visits" ~ 2,
+      ER_Use == "3+ visits" ~ 3,
+      TRUE ~ NA_real_
+    )
+  )
+
+library(car)
+
+vif_model <- lm((ER_Use_Num) ~ Insurance_Type + Sex + RaceEth + Marital_Status,
+                data = nhis2023_completeCCA)
+vif(vif_model)
+```
+
+##3. Proportional Odds Assumption -- Brant Test --\> SATISFIED with P\>0.05
+
+```{r}
+#Creating Brant Model
+model <- polr(ER_Use ~ Insurance_Type + Sex + RaceEth + Marital_Status,
+              data = nhis2023_completeCCA, Hess = TRUE)
+
+# Running Brant Model
+brant_test <- brant(model)
+
+brant_test
+```
+
+##4. Coefficients for predictors are the same, only intercepts change (TRUE given Brant test results, P-Value\>0.05)
+
+#----\> can run Ordinal Logistic Regression Model!!
+
+**\#### ANALYSIS \####**
+
+#MV Ordinal Log Regression
+
+```{r}
+#Already factored/leveled ER_Use var. 
+
+#Set ref group
+nhis2023_completeCCA$Insurance_Type <- relevel(
+  factor(nhis2023_completeCCA$Insurance_Type),
+  ref = "Private"
+)
+
+#Fit model
+model_ordinal <- polr(
+  ER_Use ~ Insurance_Type + Sex + RaceEth + Marital_Status, 
+  data = nhis2023_completeCCA,
+  Hess = TRUE  
+)
+
+#Summary
+summary(model_ordinal)
+```
+
+#Odds Ratios, 95% CIs, and P-values for Ord. Reg. Model
+
+```{r}
+
+#polr()/MASS tidy does not include p-values in its output, this message shows up: "p-values can presently only be returned for models that contain no categorical variables with more than two levels."  --> need to calculate on my own, see below (used ChatGBT to help solve)
+
+tidy_model_ordinal <- tidy(model_ordinal) %>%
+  mutate(
+    p.value = 2 * (1 - pnorm(abs(estimate / std.error))), 
+    OR = exp(estimate),                                   
+    CI_low = exp(estimate - 1.96 * std.error),           
+    CI_high = exp(estimate + 1.96 * std.error)           
+  ) %>%
+  dplyr::select(term, OR, CI_low, CI_high, p.value)     #directly call dplyr
+
+tidy_model_ordinal
+
+```
+
+#Nice Output Table
+
+```{r}
+
+tidy_model_ordinal %>%
+  kable(
+    digits = 2,                 # round to 2 decimal places
+    caption = "Ordinal Logistic Regression Results"
+  ) %>%
+  kable_styling(full_width = FALSE, position = "center")
+```
